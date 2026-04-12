@@ -43,12 +43,11 @@ if not st.session_state.api_key:
         placeholder="sk-proj-...",
         help="Your key is stored in memory only for this session. It is not saved to disk.",
     )
-    if api_key_input:
+    if st.button("Confirm API Key", type="primary", disabled=not api_key_input):
         st.session_state.api_key = api_key_input
         set_api_key(api_key_input)
         st.rerun()
-    else:
-        st.stop()
+    st.stop()
 
 # Ensure client is set (e.g. after page navigation)
 if pipeline.oai is None:
