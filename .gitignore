@@ -8,3 +8,4 @@ data/chromadb/
 data/enterprise-attack.json
 data/dashboard_history.json
 *.ipynb_checkpoints/
+.claude/

@@ -85,13 +85,22 @@ with st.sidebar:
     )
 
     st.divider()
-    st.subheader("System Status")
+    st.caption("System Status")
     cve_count = data_setup.cve_col.count() if data_setup.cve_col else 0
     attck_count = data_setup.attck_col.count() if data_setup.attck_col else 0
-    st.markdown(f"**Model:** `{pipeline.MODEL}`")
-    st.markdown(f"**CVE KB:** {cve_count} documents")
-    st.markdown(f"**ATT&CK KB:** {attck_count} documents")
-    st.markdown(f"**API Key:** {'configured' if st.session_state.get('api_key') else 'missing'}")
+    from tools import _yaraify_api_key
+    api_icon = "+" if st.session_state.get("api_key") else "-"
+    yaraify_icon = "+" if _yaraify_api_key() else "-"
+    st.markdown(
+        f"""<div style="font-size:0.78rem; line-height:1.7; color:#b0b0b0;">
+        <b>OpenAI API Key:</b> {'configured' if st.session_state.get('api_key') else 'missing'}<br>
+        <b>Model:</b> {pipeline.MODEL}<br>
+        <b>CVE KB:</b> {cve_count} documents<br>
+        <b>ATT&CK KB:</b> {attck_count} documents<br>
+        <b>YARAify Scan:</b> {'configured' if _yaraify_api_key() else 'not configured'}
+        </div>""",
+        unsafe_allow_html=True,
+    )
 
 # ── Main area ────────────────────────────────────────────────────────
 st.title("Threat Intelligence Assistant")
@@ -217,27 +226,6 @@ if scope_limits:
     c3.markdown(f"**Scope Limits:**\n{limits_md}")
 else:
     c3.markdown("**Scope Limits:** None noted")
-
-# ATT&CK Mapping
-st.subheader("ATT&CK Mapping")
-attack_mapping = report.get("attack_mapping", [])
-if attack_mapping:
-    df = pd.DataFrame(attack_mapping)
-    display_cols = []
-    if "technique_id" in df.columns:
-        display_cols.append("technique_id")
-    if "technique_name" in df.columns:
-        display_cols.append("technique_name")
-    if "confidence" in df.columns:
-        display_cols.append("confidence")
-    if "evidence_citations" in df.columns:
-        df["evidence_citations"] = df["evidence_citations"].apply(
-            lambda x: ", ".join(x) if isinstance(x, list) else str(x)
-        )
-        display_cols.append("evidence_citations")
-    st.dataframe(df[display_cols] if display_cols else df, use_container_width=True)
-else:
-    st.info("No ATT&CK mapping produced for this query.")
 
 # Key Evidence
 st.subheader("Key Evidence")

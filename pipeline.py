@@ -9,6 +9,7 @@ Provides:
 
 import os
 import json
+import re
 import time
 from typing import Any
 
@@ -25,6 +26,20 @@ from tools import lookup_cve, retrieve_attck, analyze_file
 load_dotenv()
 
 oai = None  # initialized lazily via set_api_key()
+
+_CVE_PATTERN = re.compile(r'CVE-\d{4}-\d{4,}', re.IGNORECASE)
+
+
+def _extract_cves_from_yara(file_evidence: dict) -> list[str]:
+    """Extract CVE IDs from YARA match rule names and descriptions."""
+    found = set()
+    for match in file_evidence.get("yara_matches", []):
+        found.update(_CVE_PATTERN.findall(match.get("rule", "")))
+        meta = match.get("meta", {})
+        for value in meta.values():
+            if isinstance(value, str):
+                found.update(_CVE_PATTERN.findall(value))
+    return sorted(found)
 MODEL = "gpt-4o-mini"
 
 
@@ -230,6 +245,58 @@ def run_pipeline(
             "File analysis was requested but NOT performed in this mode. "
             "Do NOT make any claims about file contents or behavior."
         )
+
+    # ── Second-pass: enrich with CVEs discovered from YARA matches ──
+    if mode == "full" and "file_evidence" in evidence_package:
+        yara_cves = _extract_cves_from_yara(evidence_package["file_evidence"])
+        if yara_cves:
+            existing_cve_ids = set()
+            for r in evidence_package.get("cve_evidence", []):
+                for hit in r.get("results", []):
+                    existing_cve_ids.add(hit.get("id", "").upper())
+
+            new_cves = [c for c in yara_cves if c.upper() not in existing_cve_ids]
+            if new_cves:
+                if "cve_evidence" not in evidence_package:
+                    evidence_package["cve_evidence"] = []
+                for cid in new_cves:
+                    evidence_package["cve_evidence"].append(lookup_cve(cid))
+                if verbose:
+                    print(f"  YARA-derived CVE enrichment: {new_cves}")
+
+        # ── Second-pass: enrich ATT&CK from YARA match descriptions ──
+        yara_descriptions = []
+        for match in evidence_package["file_evidence"].get("yara_matches", []):
+            desc = match.get("meta", {}).get("description", "")
+            if desc:
+                yara_descriptions.append(desc)
+        if yara_descriptions:
+            combined_query = "; ".join(yara_descriptions)
+            attck_from_yara = retrieve_attck(combined_query)
+            if attck_from_yara.get("results"):
+                if "attck_evidence" not in evidence_package:
+                    evidence_package["attck_evidence"] = attck_from_yara
+                else:
+                    existing_ids = {r["id"] for r in evidence_package["attck_evidence"].get("results", [])}
+                    for r in attck_from_yara["results"]:
+                        if r["id"] not in existing_ids:
+                            evidence_package["attck_evidence"]["results"].append(r)
+                if verbose:
+                    new_techniques = [r["id"] for r in attck_from_yara["results"]]
+                    print(f"  YARA-derived ATT&CK enrichment: {new_techniques}")
+
+    # Update routing to reflect second-pass enrichment
+    if "cve_evidence" in evidence_package and not routing.get("needs_cve"):
+        routing["needs_cve"] = True
+        routing.setdefault("reasoning_checklist", []).append(
+            "CVE lookup triggered by YARA match enrichment (second-pass)."
+        )
+    if "attck_evidence" in evidence_package and not routing.get("needs_attck"):
+        routing["needs_attck"] = True
+        routing.setdefault("reasoning_checklist", []).append(
+            "ATT&CK retrieval triggered by YARA match enrichment (second-pass)."
+        )
+    trace["stage1_routing"] = routing
 
     trace["evidence_package"] = evidence_package
     if verbose:

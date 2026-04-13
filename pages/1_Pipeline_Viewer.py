@@ -78,16 +78,98 @@ tool_keys = [
 tcol1, tcol2, tcol3 = st.columns(3)
 for col, (key, label) in zip([tcol1, tcol2, tcol3], tool_keys):
     with col:
-        if key in evidence:
-            st.markdown(f"**{label}** \u2705")
-            with st.expander(f"View {label}"):
+        executed = key in evidence
+        icon = "\u2705" if executed else "\u2014"
+        st.markdown(f"**{label}** {icon}")
+        with st.expander(f"Raw JSON"):
+            if executed:
                 st.json(evidence[key])
-        else:
-            st.markdown(f"**{label}** \u2014 Not executed")
+            else:
+                st.caption("Not executed.")
 
 # Evidence gating note (RAG mode)
 if "file_evidence_note" in evidence:
     st.warning(evidence["file_evidence_note"])
+
+# ── Formatted Evidence Details ──────────────────────────────────────
+
+# CVE Evidence (always shown)
+with st.expander("CVE Evidence"):
+    cve_evidence = evidence.get("cve_evidence", [])
+    if cve_evidence:
+        cve_rows = []
+        for result_set in cve_evidence:
+            match_type = result_set.get("match_type", "")
+            for hit in result_set.get("results", []):
+                meta = hit.get("metadata", {})
+                cve_rows.append({
+                    "CVE ID": meta.get("cve_id", hit.get("id", "")),
+                    "Severity": meta.get("severity", ""),
+                    "CVSS Score": meta.get("cvss3_score", ""),
+                    "Match Type": match_type,
+                })
+        if cve_rows:
+            st.dataframe(pd.DataFrame(cve_rows), use_container_width=True)
+    else:
+        st.caption("Not executed in this run.")
+
+# ATT&CK Evidence (always shown)
+with st.expander("ATT&CK Evidence"):
+    attck_evidence = evidence.get("attck_evidence", {})
+    attck_results = attck_evidence.get("results", []) if isinstance(attck_evidence, dict) else []
+    if attck_results:
+        attck_rows = []
+        for r in attck_results:
+            meta = r.get("metadata", {})
+            attck_rows.append({
+                "Technique ID": meta.get("technique_id", r.get("id", "")),
+                "Name": meta.get("name", ""),
+                "Tactics": meta.get("tactics", ""),
+                "Relevance": r.get("relevance_score", ""),
+            })
+        st.dataframe(pd.DataFrame(attck_rows), use_container_width=True)
+    else:
+        st.caption("Not executed in this run.")
+
+# File Analysis Summary (always shown)
+with st.expander("File Analysis Summary"):
+    file_evidence = evidence.get("file_evidence", {})
+    if file_evidence and not file_evidence.get("errors", []):
+        # Metadata — compact inline instead of large metric boxes
+        meta = file_evidence.get("metadata", {})
+        if meta:
+            st.markdown(
+                f"""<div style="font-size:0.9rem; line-height:2; color:#c0c0c0;">
+                File Type: <b>{meta.get('file_type_magic', 'unknown')}</b> &nbsp;&middot;&nbsp;
+                Size: <b>{meta.get('file_size_bytes', 0):,} bytes</b> &nbsp;&middot;&nbsp;
+                Entropy: <b>{meta.get('shannon_entropy', 0):.2f} ({meta.get('entropy_assessment', '')})</b>
+                </div>""",
+                unsafe_allow_html=True,
+            )
+
+        # YARA Matches
+        yara_matches = file_evidence.get("yara_matches", [])
+        if yara_matches:
+            st.markdown("**YARA Matches:**")
+            yara_rows = []
+            for m in yara_matches:
+                yara_rows.append({
+                    "Rule": m.get("rule", ""),
+                    "Author": m.get("meta", {}).get("author", ""),
+                    "Description": m.get("meta", {}).get("description", ""),
+                })
+            st.dataframe(pd.DataFrame(yara_rows), use_container_width=True)
+        else:
+            st.caption("No YARA matches.")
+
+        # String categories
+        string_cats = file_evidence.get("string_categories", {})
+        if string_cats:
+            st.markdown("**Suspicious Strings:**")
+            for cat, items in string_cats.items():
+                st.markdown(f"- **{cat}:** {', '.join(items[:5])}")
+    else:
+        st.caption("Not executed in this run.")
 
 st.divider()
 

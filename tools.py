@@ -11,6 +11,9 @@ import os
 import subprocess
 import math
 import re
+import json
+import time
+import urllib.request
 from collections import Counter
 from typing import Any
 
@@ -100,96 +103,89 @@ def retrieve_attck(query: str, n_results: int = 5) -> dict:
 # Tool 3: Enhanced Static File Analysis
 # ═══════════════════════════════════════════════════════════════════════
 
-# ── YARA Rules ────────────────────────────────────────────────────────
-# Four targeted rulesets instead of one catch-all.
+# ── YARAify Remote Scan ───────────────────────────────────────────────
+# Scans files via YARAify (abuse.ch) API against their full community
+# ruleset instead of local hardcoded rules.
 
-YARA_RULES = r"""
-rule Log4Shell_Indicators {
-    meta:
-        description = "Detects Log4Shell (CVE-2021-44228) JNDI injection patterns including obfuscation variants"
-        severity = "critical"
-        cve = "CVE-2021-44228"
-    strings:
-        // Direct JNDI patterns
-        $jndi1 = "${jndi:ldap://" ascii nocase
-        $jndi2 = "${jndi:rmi://" ascii nocase
-        $jndi3 = "${jndi:dns://" ascii nocase
-        $jndi4 = "${jndi:ldaps://" ascii nocase
-        $jndi5 = "jndi:ldap" ascii nocase
-        // Common obfuscation variants using Log4j lookup nesting
-        $obf1 = "${${lower:j}" ascii nocase
-        $obf2 = "${${upper:j}" ascii nocase
-        $obf3 = "${${::-j}" ascii
-        $obf4 = "${${env:" ascii nocase
-        $obf5 = "${${date:" ascii nocase
-        // Log4j component strings (context indicators, not proof of vuln)
-        $comp1 = "log4j-core" ascii nocase
-        $comp2 = "org.apache.logging.log4j" ascii nocase
-        $comp3 = "JndiLookup.class" ascii nocase
-    condition:
-        any of ($jndi*) or any of ($obf*) or (2 of ($comp*))
-}
+YARAIFY_API_URL = "https://yaraify-api.abuse.ch/api/v1/"
+YARAIFY_POLL_INTERVAL = 3  # seconds between status checks
+YARAIFY_POLL_MAX = 10  # max poll attempts (~30s total)
 
-rule Webshell_Indicators {
-    meta:
-        description = "Detects common webshell patterns in scripts"
-        severity = "high"
-    strings:
-        $ws1 = "eval(base64_decode(" ascii nocase
-        $ws2 = "eval($_POST[" ascii nocase
-        $ws3 = "eval($_GET[" ascii nocase
-        $ws4 = "eval($_REQUEST[" ascii nocase
-        $ws5 = "assert($_POST[" ascii nocase
-        $ws6 = "Runtime.getRuntime().exec(" ascii
-        $ws7 = "ProcessBuilder" ascii
-        $ws8 = "shell_exec(" ascii nocase
-        $ws9 = "passthru(" ascii nocase
-    condition:
-        any of them
-}
 
-rule Suspicious_Script_Patterns {
-    meta:
-        description = "Detects suspicious command execution and script patterns"
-        severity = "medium"
-    strings:
-        $cmd1 = "cmd.exe /c" ascii nocase
-        $cmd2 = "cmd /c" ascii nocase
-        $ps1  = "powershell -enc" ascii nocase
-        $ps2  = "powershell -e " ascii nocase
-        $ps3  = "powershell -nop" ascii nocase
-        $ps4  = "Invoke-Expression" ascii nocase
-        $ps5  = "IEX(" ascii nocase
-        $ps6  = "New-Object Net.WebClient" ascii nocase
-        $ps7  = "DownloadString(" ascii nocase
-        $sh1  = "/bin/sh -c" ascii
-        $sh2  = "/bin/bash -c" ascii
-        $sh3  = "curl " ascii
-        $sh4  = "wget " ascii
-        $py1  = "__import__('os').system" ascii
-        $py2  = "subprocess.call" ascii
-    condition:
-        2 of them
-}
+def _yaraify_api_key() -> str:
+    """Read YARAify API key from environment."""
+    return os.environ.get("YARAIFY_API_KEY", "")
 
-rule Encoded_Executable_Content {
-    meta:
-        description = "Detects base64-encoded PE headers or ELF magic inside text files"
-        severity = "high"
-    strings:
-        // Base64 of "MZ" (PE header) -- common patterns
-        $b64pe1 = "TVqQAAMAAAA" ascii
-        $b64pe2 = "TVpQAAIAAAA" ascii
-        // Base64 of ELF header
-        $b64elf = "f0VMRg" ascii
-        // PowerShell encoded command marker
-        $b64ps = "-EncodedCommand" ascii nocase
-        // Large base64 blob (100+ chars of base64 alphabet in a row)
-        $b64blob = /[A-Za-z0-9+\/=]{100,}/
-    condition:
-        any of ($b64pe*) or $b64elf or ($b64ps and $b64blob)
-}
-"""
+
+def yaraify_scan_file(file_path: str) -> list[dict]:
+    """
+    Upload a file to YARAify for scanning against their full YARA ruleset.
+    Returns a list of matched rules with metadata.
+    Raises RuntimeError if the scan fails or times out.
+    """
+    api_key = _yaraify_api_key()
+    if not api_key:
+        raise RuntimeError("YARAIFY_API_KEY not set")
+
+    file_name = os.path.basename(file_path)
+    with open(file_path, "rb") as f:
+        file_data = f.read()
+
+    # Build multipart form data
+    boundary = "----YARAifyBoundary9876543210"
+    body = (
+        f"--{boundary}\r\n"
+        f'Content-Disposition: form-data; name="file"; filename="{file_name}"\r\n'
+        f"Content-Type: application/octet-stream\r\n\r\n"
+    ).encode() + file_data + (
+        f"\r\n--{boundary}\r\n"
+        f'Content-Disposition: form-data; name="clamav_scan"\r\n\r\n1\r\n'
+        f"--{boundary}\r\n"
+        f'Content-Disposition: form-data; name="share_file"\r\n\r\n0\r\n'
+        f"--{boundary}--\r\n"
+    ).encode()
+
+    # Submit file
+    req = urllib.request.Request(YARAIFY_API_URL, data=body, method="POST")
+    req.add_header("Content-Type", f"multipart/form-data; boundary={boundary}")
+    req.add_header("Auth-Key", api_key)
+
+    with urllib.request.urlopen(req, timeout=30) as resp:
+        submit_data = json.loads(resp.read().decode())
+
+    if submit_data.get("query_status") != "queued":
+        raise RuntimeError(f"YARAify submit failed: {submit_data}")
+
+    task_id = submit_data["data"]["task_id"]
+
+    # Poll for results
+    for _ in range(YARAIFY_POLL_MAX):
+        time.sleep(YARAIFY_POLL_INTERVAL)
+        payload = json.dumps({"query": "get_results", "task_id": task_id}).encode()
+        req = urllib.request.Request(YARAIFY_API_URL, data=payload, method="POST")
+        req.add_header("Content-Type", "application/json")
+        req.add_header("Auth-Key", api_key)
+
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            result_data = json.loads(resp.read().decode())
+
+        if result_data.get("query_status") == "ok":
+            data = result_data.get("data")
+            # Still processing — data is a string like "queued"
+            if not isinstance(data, dict):
+                continue
+            matches = []
+            for rule in data.get("static_results", []):
+                matches.append({
+                    "rule": rule.get("rule_name", ""),
+                    "author": rule.get("author", ""),
+                    "description": rule.get("description", ""),
+                    "reference": rule.get("reference", ""),
+                    "tlp": rule.get("tlp", ""),
+                })
+            return matches
+
+    raise RuntimeError(f"YARAify scan timed out after {YARAIFY_POLL_MAX * YARAIFY_POLL_INTERVAL}s")
 
 
 # ── File Metadata Helpers ─────────────────────────────────────────────
@@ -311,14 +307,13 @@ def categorize_strings(raw_strings: list[str]) -> dict:
 
 def analyze_file(
     file_path: str,
-    yara_rule_text: str = YARA_RULES,
     max_strings: int = 500,
 ) -> dict:
     """
     Enhanced static analysis:
       1. File metadata (size, magic bytes, entropy)
       2. Strings extraction + categorization
-      3. Multi-rule YARA scan
+      3. YARAify remote scan (community YARA ruleset via abuse.ch)
     """
     result: dict[str, Any] = {
         "file_path": file_path,
@@ -350,32 +345,24 @@ def analyze_file(
     except subprocess.TimeoutExpired:
         result["errors"].append("`strings` timed out.")
 
-    # 3) YARA scan (fixed for yara-python 4.x StringMatch API)
+    # 3) YARAify remote scan
     try:
-        import yara
-        rules = yara.compile(source=yara_rule_text)
-        matches = rules.match(file_path)
+        matches = yaraify_scan_file(file_path)
         for m in matches:
-            match_entry = {
-                "rule": m.rule,
-                "tags": m.tags,
-                "meta": {k: v for k, v in m.meta.items()},
+            result["yara_matches"].append({
+                "rule": m["rule"],
+                "tags": [],
+                "meta": {
+                    "author": m.get("author", ""),
+                    "description": m.get("description", ""),
+                    "reference": m.get("reference", ""),
+                    "tlp": m.get("tlp", ""),
+                },
                 "matched_strings": [],
-            }
-            for s in m.strings[:20]:
-                for inst in s.instances:
-                    match_entry["matched_strings"].append({
-                        "offset": inst.offset,
-                        "identifier": s.identifier,
-                        "data": inst.matched_data.decode("utf-8", errors="replace")[:100],
-                    })
-            result["yara_matches"].append(match_entry)
-    except ImportError:
-        result["errors"].append(
-            "yara-python not installed; skipping YARA scan. "
-            "Install with: pip install yara-python"
-        )
+            })
+    except RuntimeError as e:
+        result["errors"].append(f"YARAify scan: {e}")
     except Exception as e:
-        result["errors"].append(f"YARA error: {e}")
+        result["errors"].append(f"YARAify error: {e}")
 
     return result
